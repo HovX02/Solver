@@ -70,9 +70,48 @@ python3 api_server.py
 
 ---
 
-## ⚙️ Konfigurasi (`config.json`)
+## 🐳 Penggunaan Docker
 
-Ketika pertama kali dijalankan, script akan membuat `config.json`. Anda bisa mengubahnya langsung:
+Anda dapat menjalankan Turnstile Solver menggunakan Docker atau Docker Compose tanpa perlu menginstall Python atau dependensi browser secara manual di host:
+
+### Menggunakan Docker Compose (Direkomendasikan)
+```bash
+docker-compose up -d --build
+```
+
+### Menggunakan Docker CLI
+```bash
+# Build image
+docker build -t turnstile-solver .
+
+# Jalankan kontainer dengan environment variable
+docker run -d \
+  -p 8000:8000 \
+  -e PROXY_SUPPORT=true \
+  -e PROXIES="http://user:pass@1.2.3.4:8080, socks5://5.6.7.8:1080" \
+  --name turnstile-solver \
+  turnstile-solver
+```
+
+---
+
+## ⚙️ Konfigurasi & Environment Variable
+
+Semua pengaturan di `config.json` dapat di-override melalui environment variable:
+
+| Parameter | Env Var | Tipe | Default | Keterangan |
+|---|---|---|---|---|
+| `headless` | `HEADLESS` | bool | `true` | Browser berjalan tanpa tampilan GUI |
+| `thread` | `THREAD` | int | `2` | Jumlah instance browser |
+| `page_count` | `PAGE_COUNT` | int | `1` | Jumlah tab/halaman per browser |
+| `proxy_support` | `PROXY_SUPPORT` | bool | `false` | Dukungan proxy (otomatis aktif jika `PROXIES`/`PROXY` diisi) |
+| `proxy_file` | `PROXY_FILE` | str | `proxies.txt` | Path file daftar proxy |
+| `host` | `HOST` | str | `0.0.0.0` | Host server |
+| `port` | `PORT` | int | `8000` | Port server |
+| `debug` | `DEBUG` | bool | `false` | Mode debug logging |
+| `cleanup_interval_minutes` | `CLEANUP_INTERVAL_MINUTES` | int | `10` | Jeda waktu sistem merefresh/membersihkan memori browser |
+
+Ketika pertama kali dijalankan di terminal interaktif, script akan membuat `config.json`. Anda bisa mengubahnya langsung:
 
 ```json
 {
@@ -88,24 +127,29 @@ Ketika pertama kali dijalankan, script akan membuat `config.json`. Anda bisa men
 }
 ```
 
-| Parameter | Tipe | Default | Keterangan |
-|---|---|---|---|
-| `headless` | bool | `true` | Browser berjalan tanpa tampilan GUI |
-| `thread` | int | `2` | Jumlah instance browser (disarankan max = jumlah core CPU) |
-| `page_count` | int | `1` | Jumlah tab/halaman per browser |
-| `proxy_support` | bool | `false` | Status penggunaan daftar proxy dari `proxies.txt` |
-| `cleanup_interval_minutes` | int | `10` | Jeda waktu sistem merefresh/membersihkan memori browser |
-
 ---
 
-## 🌐 Format Proxy (`proxies.txt`)
+## 🌐 Konfigurasi Proxy
 
-Jika `proxy_support` dihidupkan, tambahkan proxy pada file `proxies.txt` (satu proxy tiap baris).
-Format yang didukung:
+Proxy dapat dimasukkan via environment variable (`PROXIES` atau `PROXY`) atau ditambahkan ke `proxies.txt`.
+
+### 1. Via Environment Variable
+Pisahkan beberapa proxy menggunakan koma, baris baru, atau spasi:
+```bash
+export PROXIES="http://user:pass@10.0.0.1:8080, socks5://10.0.0.2:1080, 10.0.0.3:3128"
+```
+
+### 2. Via `proxies.txt`
+Tambahkan proxy pada file `proxies.txt` (satu proxy tiap baris).
+
+### Format yang Didukung
+Proxy secara otomatis dinormalkan (jika skema tidak ditulis, `http://` akan ditambahkan secara otomatis):
 ```text
 http://ip:port
 http://user:pass@ip:port
 socks5://user:pass@ip:port
+ip:port
+user:pass@ip:port
 ```
 
 ## 📖 Endpoint Dokumentasi API

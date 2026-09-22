@@ -4,6 +4,8 @@ import sys
 import time
 import uuid
 import asyncio
+import re
+from urllib.parse import urlparse
 from fastapi import FastAPI, Query, HTTPException, Request
 from fastapi.responses import JSONResponse
 from loguru import logger
@@ -76,16 +78,67 @@ class ClearanceAPIServer:
     #  PROXY
     # ──────────────────────────────────────────────
 
+    @staticmethod
+    def normalize_proxy(raw_proxy: str) -> str | None:
+        """
+        Membersihkan, menormalkan, dan memvalidasi URL proxy.
+        Mendukung format:
+          - http://ip:port
+          - http://user:pass@ip:port
+          - socks5://user:pass@ip:port
+          - ip:port (otomatis ditambahkan http://)
+          - user:pass@ip:port (otomatis ditambahkan http://)
+        """
+        if not raw_proxy:
+            return None
+        s = raw_proxy.strip().strip("'\"")
+        if not s or s.startswith("#"):
+            return None
+
+        # Tambahkan http:// jika tidak ada skema
+        if not re.match(r'^[a-zA-Z0-9]+://', s):
+            s = "http://" + s
+
+        try:
+            parsed = urlparse(s)
+            if parsed.scheme and parsed.hostname:
+                return s
+        except Exception:
+            pass
+        return None
+
     def _load_proxies(self):
         if not self.proxy_support:
             return
-        if not os.path.isfile(self.proxy_file):
-            logger.warning(f"proxy_support aktif tapi file '{self.proxy_file}' tidak ditemukan.")
-            return
-        with open(self.proxy_file) as f:
-            lines = [ln.strip() for ln in f if ln.strip() and not ln.startswith("#")]
-        self.proxies = lines
-        logger.info(f"Memuat {len(self.proxies)} proxy dari '{self.proxy_file}'")
+
+        raw_entries = []
+
+        # 1. Ambil dari environment variable (PROXIES atau PROXY)
+        env_proxies = os.environ.get("PROXIES") or os.environ.get("PROXY")
+        if env_proxies:
+            split_items = re.split(r'[\r\n,;\s]+', env_proxies)
+            raw_entries.extend(split_items)
+
+        # 2. Ambil dari file proxy jika ada
+        if os.path.isfile(self.proxy_file):
+            try:
+                with open(self.proxy_file, encoding="utf-8") as f:
+                    raw_entries.extend(f.readlines())
+            except Exception as e:
+                logger.warning(f"Gagal membaca file proxy '{self.proxy_file}': {e}")
+
+        # Normalkan dan hilangkan duplikat
+        valid_proxies = []
+        for item in raw_entries:
+            norm = self.normalize_proxy(item)
+            if norm and norm not in valid_proxies:
+                valid_proxies.append(norm)
+
+        self.proxies = valid_proxies
+        if self.proxies:
+            logger.info(f"Memuat {len(self.proxies)} proxy valid.")
+        else:
+            logger.warning(f"proxy_support aktif tapi tidak ada proxy valid dari env (PROXIES/PROXY) atau file '{self.proxy_file}'.")
 
     def _next_proxy(self):
         if not self.proxies:
@@ -97,12 +150,12 @@ class ClearanceAPIServer:
     async def _create_context_with_proxy(self, proxy: str = None):
         if not proxy:
             return await self.browser.new_context()
-        from urllib.parse import urlparse
         parsed = urlparse(proxy)
         if not parsed.scheme or not parsed.hostname:
             logger.warning(f"Format proxy tidak valid: {proxy}")
             return await self.browser.new_context()
-        server = f"{parsed.scheme}://{parsed.hostname}:{parsed.port}"
+        port_str = f":{parsed.port}" if parsed.port else ""
+        server = f"{parsed.scheme}://{parsed.hostname}{port_str}"
         if parsed.username and parsed.password:
             return await self.browser.new_context(
                 proxy={"server": server, "username": parsed.username, "password": parsed.password}
@@ -750,16 +803,16 @@ class ClearanceAPIServer:
         try:
             from playwright.async_api import async_playwright
             playwright = await async_playwright().start()
-            
+
             # Setup proxy jika proxy_support aktif
             proxy_args = None
             if self.proxy_support and self.proxies:
                 proxy_str = self._next_proxy()
                 if proxy_str:
-                    from urllib.parse import urlparse
                     parsed = urlparse(proxy_str)
                     if parsed.scheme and parsed.hostname:
-                        server = f"{parsed.scheme}://{parsed.hostname}:{parsed.port}"
+                        port_str = f":{parsed.port}" if parsed.port else ""
+                        server = f"{parsed.scheme}://{parsed.hostname}{port_str}"
                         if parsed.username and parsed.password:
                             proxy_args = {"server": server, "username": parsed.username, "password": parsed.password}
                         else:
@@ -770,7 +823,7 @@ class ClearanceAPIServer:
                 headless=self.headless,
                 args=self.browser_args + ["--disable-gpu", "--disable-dev-shm-usage"]
             )
-            
+
             context = await browser.new_context(
                 user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
                 viewport={"width": 1280, "height": 720},
@@ -798,7 +851,7 @@ class ClearanceAPIServer:
             await page.goto(url, wait_until="domcontentloaded", timeout=30000)
 
             logger.info(f"[reCAPTCHA] Memeriksa keberadaan script reCAPTCHA di halaman — {task_id}")
-            
+
             has_recaptcha = False
             try:
                 await page.wait_for_function("""() => {
@@ -1111,15 +1164,47 @@ CONFIG_DEFAULTS = {
 
 
 def _load_config() -> dict:
+    cfg = dict(CONFIG_DEFAULTS)
     try:
         with open(CONFIG_PATH) as f:
-            return {**CONFIG_DEFAULTS, **json.load(f)}
+            file_cfg = json.load(f)
+            cfg.update(file_cfg)
     except FileNotFoundError:
         print(f"  ⚠️  {CONFIG_PATH} tidak ditemukan, menggunakan nilai default\n")
-        return dict(CONFIG_DEFAULTS)
     except json.JSONDecodeError as e:
         print(f"  ❌  Format {CONFIG_PATH} tidak valid: {e}\n")
-        return dict(CONFIG_DEFAULTS)
+
+    # Override dari environment variables
+    env_mappings = {
+        "HEADLESS": ("headless", bool),
+        "THREAD": ("thread", int),
+        "PAGE_COUNT": ("page_count", int),
+        "PROXY_SUPPORT": ("proxy_support", bool),
+        "PROXY_FILE": ("proxy_file", str),
+        "HOST": ("host", str),
+        "PORT": ("port", int),
+        "DEBUG": ("debug", bool),
+        "CLEANUP_INTERVAL_MINUTES": ("cleanup_interval_minutes", int),
+    }
+
+    for env_key, (cfg_key, val_type) in env_mappings.items():
+        if env_key in os.environ:
+            val = os.environ[env_key]
+            if val_type == bool:
+                cfg[cfg_key] = val.lower() in ("true", "1", "yes", "y")
+            elif val_type == int:
+                try:
+                    cfg[cfg_key] = int(val)
+                except ValueError:
+                    pass
+            else:
+                cfg[cfg_key] = val
+
+    # Otomatis aktifkan proxy_support jika PROXIES / PROXY env var di-set
+    if os.environ.get("PROXIES") or os.environ.get("PROXY"):
+        cfg["proxy_support"] = True
+
+    return cfg
 
 
 def _save_config(cfg: dict):
@@ -1164,6 +1249,10 @@ def _show_config_summary(cfg: dict):
 def _interactive_config(cfg: dict) -> dict:
     _show_config_summary(cfg)
     print()
+    if not sys.stdin.isatty():
+        print("  ℹ️   Non-interactive session detected, skipping interactive config prompt.")
+        return cfg
+
     ans = input("  ▶  Lanjutkan? [Enter/Y = ya  |  N = ubah] : ").strip().lower()
     if ans not in ("n", "no", "tidak"):
         return cfg
@@ -1207,6 +1296,9 @@ def _check_port(cfg: dict) -> dict:
             print("═" * 52 + "\n")
             break
         print(f"  ❌  Port {port} sudah digunakan!")
+        if not sys.stdin.isatty():
+            print("  ⚠️  Running in non-interactive environment. Cannot prompt for alternative port.")
+            break
         try:
             new_port = int(input(f"  🔁  Port pengganti : ").strip())
             cfg = dict(cfg)
