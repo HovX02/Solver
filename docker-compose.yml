@@ -1,0 +1,21 @@
+version: '3.8'
+
+services:
+  turnstile-solver:
+    build: .
+    container_name: turnstile-solver
+    restart: unless-stopped
+    ports:
+      - "${PORT:-8000}:8000"
+    environment:
+      - HEADLESS=${HEADLESS:-true}
+      - THREAD=${THREAD:-2}
+      - PAGE_COUNT=${PAGE_COUNT:-1}
+      - PROXY_SUPPORT=${PROXY_SUPPORT:-false}
+      - PROXIES=${PROXIES:-}
+      - HOST=0.0.0.0
+      - PORT=8000
+      - DEBUG=${DEBUG:-false}
+      - CLEANUP_INTERVAL_MINUTES=${CLEANUP_INTERVAL_MINUTES:-10}
+    volumes:
+      - ./debug_logs:/app/debug_logs

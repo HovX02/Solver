@@ -70,9 +70,48 @@ python3 api_server.py
 
 ---
 
-## ⚙️ Configuration (`config.json`)
+## 🐳 Docker Deployment
 
-On first run, the script will create a `config.json` file. You can edit it directly:
+You can run Turnstile Solver using Docker or Docker Compose without installing Python or browser dependencies on your host.
+
+### Using Docker Compose (Recommended)
+```bash
+docker-compose up -d --build
+```
+
+### Using Docker CLI
+```bash
+# Build the image
+docker build -t turnstile-solver .
+
+# Run container with environment variables
+docker run -d \
+  -p 8000:8000 \
+  -e PROXY_SUPPORT=true \
+  -e PROXIES="http://user:pass@1.2.3.4:8080, socks5://5.6.7.8:1080" \
+  --name turnstile-solver \
+  turnstile-solver
+```
+
+---
+
+## ⚙️ Configuration & Environment Variables
+
+All settings in `config.json` can be overridden via environment variables:
+
+| Parameter | Env Var | Type | Default | Description |
+|---|---|---|---|---|
+| `headless` | `HEADLESS` | bool | `true` | Browser runs without a GUI |
+| `thread` | `THREAD` | int | `2` | Number of browser instances |
+| `page_count` | `PAGE_COUNT` | int | `1` | Number of tabs/pages per browser |
+| `proxy_support` | `PROXY_SUPPORT` | bool | `false` | Enable proxy support (automatically enabled if `PROXIES`/`PROXY` is set) |
+| `proxy_file` | `PROXY_FILE` | str | `proxies.txt` | File path for proxy list |
+| `host` | `HOST` | str | `0.0.0.0` | Host address |
+| `port` | `PORT` | int | `8000` | Port number |
+| `debug` | `DEBUG` | bool | `false` | Enable debug logging |
+| `cleanup_interval_minutes` | `CLEANUP_INTERVAL_MINUTES` | int | `10` | Interval for refreshing/cleaning up browser memory |
+
+On first run in an interactive shell, the script will create a `config.json` file. You can edit it directly:
 
 ```json
 {
@@ -88,24 +127,29 @@ On first run, the script will create a `config.json` file. You can edit it direc
 }
 ```
 
-| Parameter | Type | Default | Description |
-|---|---|---|---|
-| `headless` | bool | `true` | Browser runs without a GUI |
-| `thread` | int | `2` | Number of browser instances (recommended max = number of CPU cores) |
-| `page_count` | int | `1` | Number of tabs/pages per browser |
-| `proxy_support` | bool | `false` | Whether to use the proxy list from `proxies.txt` |
-| `cleanup_interval_minutes` | int | `10` | Interval for refreshing/cleaning up browser memory |
-
 ---
 
-## 🌐 Proxy Format (`proxies.txt`)
+## 🌐 Proxy Configuration
 
-If `proxy_support` is enabled, add proxies to `proxies.txt` (one proxy per line).
-Supported formats:
+Proxies can be supplied via environment variables (`PROXIES` or `PROXY`) or added to `proxies.txt`.
+
+### 1. Via Environment Variable
+Separate multiple proxies using commas, newlines, or spaces:
+```bash
+export PROXIES="http://user:pass@10.0.0.1:8080, socks5://10.0.0.2:1080, 10.0.0.3:3128"
+```
+
+### 2. Via `proxies.txt`
+Add proxies to `proxies.txt` (one proxy per line).
+
+### Supported Formats
+Proxies are automatically normalized (if scheme is missing, `http://` is prepended):
 ```text
 http://ip:port
 http://user:pass@ip:port
 socks5://user:pass@ip:port
+ip:port
+user:pass@ip:port
 ```
 
 ## 📖 API Endpoint Documentation
