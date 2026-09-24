@@ -44,7 +44,8 @@ class ClearanceAPIServer:
 
     def __init__(self, headless: bool, thread: int, page_count: int,
                  proxy_support: bool, proxy_file: str = "proxies.txt",
-                 cleanup_interval_minutes: int = 10):
+                 cleanup_interval_minutes: int = 10,
+                 worker_mode: bool = False, idle_timeout: int = 10):
         self.app = FastAPI()
         self.headless = headless
         self.thread_count = thread
@@ -52,6 +53,8 @@ class ClearanceAPIServer:
         self.proxy_support = proxy_support
         self.proxy_file = proxy_file
         self.cleanup_interval_minutes = cleanup_interval_minutes
+        self.worker_mode = worker_mode
+        self.idle_timeout = idle_timeout
         self.page_pool = asyncio.Queue()
         self.browser_args = [
             "--no-sandbox",
@@ -64,6 +67,12 @@ class ClearanceAPIServer:
         self.proxies = []
         self._proxy_index = 0
         self.max_task_num = self.thread_count * self.page_count
+
+        self._browser_lock = asyncio.Lock()
+        self._active_tasks = 0
+        self._idle_task = None
+        self._cleanup_task = None
+        self._periodic_task = None
 
         self.app.add_event_handler("startup", self._startup)
         self.app.add_event_handler("shutdown", self._shutdown)
@@ -167,20 +176,79 @@ class ClearanceAPIServer:
     # ──────────────────────────────────────────────
 
     async def _startup(self):
-        logger.info("Inisialisasi browser...")
-        try:
-            await self._initialize_browser()
-        except Exception as e:
-            logger.error(f"Inisialisasi gagal: {e}")
-            raise
+        if self.worker_mode:
+            logger.info("Worker mode aktif. Browser akan diinisialisasi secara on-demand saat request masuk.")
+            if not self._cleanup_task:
+                self._cleanup_task = asyncio.create_task(self._cleanup_results())
+        else:
+            logger.info("Inisialisasi browser...")
+            try:
+                await self._initialize_browser()
+            except Exception as e:
+                logger.error(f"Inisialisasi gagal: {e}")
+                raise
 
     async def _shutdown(self):
         logger.info("Menutup browser...")
-        try:
-            await self.browser.close()
-        except Exception as e:
-            logger.warning(f"Error saat menutup browser: {e}")
+        if self._idle_task and not self._idle_task.done():
+            self._idle_task.cancel()
+        if self._cleanup_task and not self._cleanup_task.done():
+            self._cleanup_task.cancel()
+        if self._periodic_task and not self._periodic_task.done():
+            self._periodic_task.cancel()
+        await self._close_browser()
         logger.success("Browser berhasil ditutup")
+
+    async def _ensure_browser_ready(self):
+        """Mempersiapkan browser secara on-demand jika belum berjalan."""
+        async with self._browser_lock:
+            if self._idle_task and not self._idle_task.done():
+                self._idle_task.cancel()
+                self._idle_task = None
+
+            if self.browser is None or not self.browser.is_connected():
+                logger.info("Membuka browser baru untuk memproses request (worker mode)...")
+                await self._initialize_browser()
+
+    def _increment_active_tasks(self):
+        self._active_tasks += 1
+        if self._idle_task and not self._idle_task.done():
+            self._idle_task.cancel()
+            self._idle_task = None
+
+    def _decrement_active_tasks(self):
+        self._active_tasks = max(0, self._active_tasks - 1)
+        if self.worker_mode and self._active_tasks == 0:
+            if self._idle_task and not self._idle_task.done():
+                self._idle_task.cancel()
+            self._idle_task = asyncio.create_task(self._schedule_idle_shutdown())
+
+    async def _schedule_idle_shutdown(self):
+        try:
+            await asyncio.sleep(self.idle_timeout)
+            async with self._browser_lock:
+                if self.worker_mode and self._active_tasks == 0 and self.browser:
+                    logger.info(f"Tidak ada task aktif selama {self.idle_timeout} detik. Menutup browser untuk menghemat RAM...")
+                    await self._close_browser()
+        except asyncio.CancelledError:
+            pass
+
+    async def _close_browser(self):
+        """Tutup browser, context, dan kosongkan page pool."""
+        if self.browser:
+            try:
+                await self.browser.close()
+            except Exception as e:
+                logger.warning(f"Error saat menutup browser: {e}")
+            self.browser = None
+            self.camoufox = None
+
+        self.contexts = []
+        while not self.page_pool.empty():
+            try:
+                self.page_pool.get_nowait()
+            except asyncio.QueueEmpty:
+                break
 
     async def _initialize_browser(self):
         self._load_proxies()
@@ -192,8 +260,10 @@ class ClearanceAPIServer:
         self.browser = await self.camoufox.start()
         await self._build_page_pool()
         logger.success(f"Pool siap: {self.page_pool.qsize()} halaman")
-        asyncio.create_task(self._cleanup_results())
-        asyncio.create_task(self._periodic_cleanup(self.cleanup_interval_minutes))
+        if not self._cleanup_task or self._cleanup_task.done():
+            self._cleanup_task = asyncio.create_task(self._cleanup_results())
+        if not self._periodic_task or self._periodic_task.done():
+            self._periodic_task = asyncio.create_task(self._periodic_cleanup(self.cleanup_interval_minutes))
 
     async def _build_page_pool(self):
         """Buat/rebuild semua context dan page ke dalam pool."""
@@ -259,6 +329,9 @@ class ClearanceAPIServer:
 
         while True:
             await asyncio.sleep(interval_minutes * 60)
+            if self.browser is None or not self.browser.is_connected():
+                logger.debug("[Cleanup] Browser tidak aktif, lewati periodic cleanup.")
+                continue
             logger.info(f"[Cleanup] Memulai FORCED cleanup (interval: {interval_minutes} menit)...")
 
             # Fase 1: Drain semua page dari pool secara non-blocking
@@ -409,8 +482,10 @@ class ClearanceAPIServer:
     async def _solve_turnstile(self, task_id: str, url: str, sitekey: str,
                                 action: str = None, cdata: str = None):
         start_time = time.time()
-        page, context = await self.page_pool.get()
+        self._increment_active_tasks()
+        page, context = None, None
         try:
+            page, context = await self.page_pool.get()
             url_with_slash = url if url.endswith("/") else url + "/"
             turnstile_div = (
                 f'<div class="cf-turnstile" style="background:white;" data-sitekey="{sitekey}"'
@@ -494,6 +569,7 @@ class ClearanceAPIServer:
                 await self.page_pool.put((page, context))
             else:
                 logger.info(f"[Turnstile] Page dibuang (context sudah di-restart oleh cleanup) — {task_id}")
+            self._decrement_active_tasks()
 
 
     # ──────────────────────────────────────────────
@@ -506,8 +582,10 @@ class ClearanceAPIServer:
         lalu ambil cookie cf_clearance dan User-Agent.
         """
         start_time = time.time()
-        page, context = await self.page_pool.get()
+        self._increment_active_tasks()
+        page, context = None, None
         try:
+            page, context = await self.page_pool.get()
             user_agent = await page.evaluate("navigator.userAgent")
 
             logger.info(f"[Clearance] Navigasi ke {url} — {task_id}")
@@ -572,6 +650,7 @@ class ClearanceAPIServer:
                 await self.page_pool.put((page, context))
             else:
                 logger.info(f"[Clearance] Page dibuang (context sudah di-restart oleh cleanup) — {task_id}")
+            self._decrement_active_tasks()
 
     # ──────────────────────────────────────────────
     #  AWS WAF TOKEN SOLVER
@@ -596,7 +675,8 @@ class ClearanceAPIServer:
         Jika IP diblok CloudFront, otomatis retry dengan proxy (jika tersedia).
         """
         start_time = time.time()
-        page, context = await self.page_pool.get()
+        self._increment_active_tasks()
+        page, context = None, None
         _temp_context = None  # context sementara untuk retry proxy
 
         async def _navigate_and_poll(p, ctx, attempt_label: str):
@@ -658,6 +738,7 @@ class ClearanceAPIServer:
             return waf_cookie, final_title, final_url, response_status, poll_count, False
 
         try:
+            page, context = await self.page_pool.get()
             logger.info(f"[AWS-Token] Navigasi ke {url} — {task_id}")
             logger.debug(f"[AWS-Token] Timeout: {timeout}s | proxy_support: {self.proxy_support} | proxies: {len(self.proxies)}")
 
@@ -790,6 +871,7 @@ class ClearanceAPIServer:
                 await self.page_pool.put((page, context))
             else:
                 logger.info(f"[AWS-Token] Page dibuang (context sudah di-restart) — {task_id}")
+            self._decrement_active_tasks()
 
 
     # ──────────────────────────────────────────────
@@ -798,6 +880,7 @@ class ClearanceAPIServer:
 
     async def _solve_recaptcha(self, task_id: str, url: str, sitekey: str, action: str):
         start_time = time.time()
+        self._increment_active_tasks()
         browser = None
         playwright = None
         try:
@@ -921,6 +1004,7 @@ class ClearanceAPIServer:
                     await playwright.stop()
                 except Exception:
                     pass
+            self._decrement_active_tasks()
 
 
     # ──────────────────────────────────────────────
@@ -931,6 +1015,8 @@ class ClearanceAPIServer:
                                  action: str = Query(None), cdata: str = Query(None)):
         if not url or not sitekey:
             raise HTTPException(status_code=400, detail={"status": "error", "error": "Parameter 'url' dan 'sitekey' wajib diisi"})
+
+        await self._ensure_browser_ready()
 
         if self.page_pool.qsize() == 0:
             return JSONResponse(content={"status": "error", "error": "Server penuh, coba lagi nanti"}, status_code=429)
@@ -960,6 +1046,8 @@ class ClearanceAPIServer:
         if not url:
             raise HTTPException(status_code=400, detail={"status": "error", "error": "Parameter 'url' wajib diisi"})
 
+        await self._ensure_browser_ready()
+
         if self.page_pool.qsize() == 0:
             return JSONResponse(content={"status": "error", "error": "Server penuh, coba lagi nanti"}, status_code=429)
 
@@ -983,6 +1071,8 @@ class ClearanceAPIServer:
         """
         if not url:
             raise HTTPException(status_code=400, detail={"status": "error", "error": "Parameter 'url' wajib diisi"})
+
+        await self._ensure_browser_ready()
 
         if self.page_pool.qsize() == 0:
             return JSONResponse(content={"status": "error", "error": "Server penuh, coba lagi nanti"}, status_code=429)
@@ -1050,10 +1140,11 @@ class ClearanceAPIServer:
 
 
 def create_app(headless, thread, page_count, proxy_support, proxy_file="proxies.txt",
-               cleanup_interval_minutes=10) -> FastAPI:
+               cleanup_interval_minutes=10, worker_mode=False, idle_timeout=10) -> FastAPI:
     server = ClearanceAPIServer(headless=headless, thread=thread, page_count=page_count,
                                 proxy_support=proxy_support, proxy_file=proxy_file,
-                                cleanup_interval_minutes=cleanup_interval_minutes)
+                                cleanup_interval_minutes=cleanup_interval_minutes,
+                                worker_mode=worker_mode, idle_timeout=idle_timeout)
     return server.app
 
 
@@ -1160,6 +1251,8 @@ CONFIG_DEFAULTS = {
     "port":          8001,   # port berbeda dari api_server.py agar bisa jalan bersamaan
     "debug":         False,
     "cleanup_interval_minutes": 10,  # interval cleanup paksa (menit)
+    "worker_mode":   False, # jika true, browser baru dinyalakan saat ada request & mati jika idle
+    "idle_timeout":  10,    # waktu tunggu idle (detik) sebelum browser dimatikan di worker_mode
 }
 
 
@@ -1185,6 +1278,8 @@ def _load_config() -> dict:
         "PORT": ("port", int),
         "DEBUG": ("debug", bool),
         "CLEANUP_INTERVAL_MINUTES": ("cleanup_interval_minutes", int),
+        "WORKER_MODE": ("worker_mode", bool),
+        "IDLE_TIMEOUT": ("idle_timeout", int),
     }
 
     for env_key, (cfg_key, val_type) in env_mappings.items():
@@ -1240,6 +1335,8 @@ def _show_config_summary(cfg: dict):
         "port":          ("Port server",                      "int"),
         "debug":         ("Mode Debug",                       "bool"),
         "cleanup_interval_minutes": ("Interval cleanup paksa (menit)", "int"),
+        "worker_mode":   ("Worker Mode (On-Demand Browser)",  "bool"),
+        "idle_timeout":  ("Idle Timeout Browser (detik)",     "int"),
     }
     for i, (key, (label, _)) in enumerate(labels.items(), 1):
         print(f"  [{i}] {label:<38} : {cfg.get(key)}")
@@ -1257,7 +1354,7 @@ def _interactive_config(cfg: dict) -> dict:
     if ans not in ("n", "no", "tidak"):
         return cfg
 
-    field_order = ["headless", "thread", "page_count", "proxy_support", "host", "port", "debug", "cleanup_interval_minutes"]
+    field_order = ["headless", "thread", "page_count", "proxy_support", "host", "port", "debug", "cleanup_interval_minutes", "worker_mode", "idle_timeout"]
     labels = {
         "headless":      "Mode Headless (true/false)",
         "thread":        "Jumlah thread",
@@ -1267,6 +1364,8 @@ def _interactive_config(cfg: dict) -> dict:
         "port":          "Port server",
         "debug":         "Mode Debug (true/false)",
         "cleanup_interval_minutes": "Interval cleanup paksa (menit)",
+        "worker_mode":   "Worker Mode (true/false)",
+        "idle_timeout":  "Idle Timeout Browser (detik)",
     }
     print("\n  ✏️   Tekan Enter untuk mempertahankan nilai saat ini")
     print("─" * 52)
@@ -1379,5 +1478,7 @@ if __name__ == "__main__":
         proxy_support=config["proxy_support"],
         proxy_file=config.get("proxy_file", "proxies.txt"),
         cleanup_interval_minutes=config.get("cleanup_interval_minutes", 10),
+        worker_mode=config.get("worker_mode", False),
+        idle_timeout=config.get("idle_timeout", 10),
     )
     uvicorn.run(app, host=config["host"], port=config["port"])
