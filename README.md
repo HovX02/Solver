@@ -20,6 +20,7 @@ A high-performance solver for Cloudflare Turnstile CAPTCHA, cf_clearance, Recapt
 - **4 Solver Endpoints**: `/turnstile`, `/clearance`, `/aws-token`, `/recaptchaV3`
 - **Auto Install & Fetch**: Python dependencies and Camoufox are installed automatically on first run.
 - **Configuration via `config.json`**: All settings can be configured via file or interactive prompt.
+- **Worker Mode (On-Demand Browser)**: When enabled (`WORKER_MODE=true`), browser instance is only launched when a request arrives and automatically shut down when idle to conserve RAM/CPU.
 - **Proxy Rotation**: Per-browser-instance proxy support with round-robin rotation.
 - **Forced Cleanup**: Periodic forced memory cleanup for server stability on low-RAM VPS.
 - **Headless & GUI Mode**: Compatible for running via Terminal/VPS (`xvfb`) or RDP.
@@ -110,6 +111,8 @@ All settings in `config.json` can be overridden via environment variables:
 | `port` | `PORT` | int | `8000` | Port number |
 | `debug` | `DEBUG` | bool | `false` | Enable debug logging |
 | `cleanup_interval_minutes` | `CLEANUP_INTERVAL_MINUTES` | int | `10` | Interval for refreshing/cleaning up browser memory |
+| `worker_mode` | `WORKER_MODE` | bool | `false` | Run browser on-demand (start on request, close when idle) |
+| `idle_timeout` | `IDLE_TIMEOUT` | int | `10` | Idle timeout in seconds before closing browser in worker mode |
 
 On first run in an interactive shell, the script will create a `config.json` file. You can edit it directly:
 
@@ -123,7 +126,9 @@ On first run in an interactive shell, the script will create a `config.json` fil
     "host":          "0.0.0.0",
     "port":          8000,
     "debug":         false,
-    "cleanup_interval_minutes": 10
+    "cleanup_interval_minutes": 10,
+    "worker_mode":   false,
+    "idle_timeout":  10
 }
 ```
 

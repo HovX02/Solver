@@ -20,6 +20,7 @@ Solusi pemecahan CAPTCHA Cloudflare Turnstile, cf_clearance, Recaptcha V3 & AWS 
 - **4 Endpoint Solver**: `/turnstile`, `/clearance`, `/aws-token`, `/recaptchaV3`
 - **Auto Install & Fetch**: Dependensi Python dan Camoufox diinstall otomatis saat pertama kali jalan.
 - **Konfigurasi via `config.json`**: Semua setting dapat diatur dari file atau prompt interaktif.
+- **Worker Mode (On-Demand Browser)**: Saat diaktifkan (`WORKER_MODE=true`), browser hanya akan menyala saat ada request solver dan otomatis mati saat idle untuk menghemat memori/RAM.
 - **Proxy Rotation**: Dukungan proxy per-instance browser dengan rotasi round-robin.
 - **Forced Cleanup**: Cleanup memori berkala paksa untuk kestabilan server di VPS ber-RAM kecil.
 - **Mode Headless & GUI**: Kompatibel untuk dijalankan via Terminal/VPS (`xvfb`) maupun RDP.
@@ -110,6 +111,8 @@ Semua pengaturan di `config.json` dapat di-override melalui environment variable
 | `port` | `PORT` | int | `8000` | Port server |
 | `debug` | `DEBUG` | bool | `false` | Mode debug logging |
 | `cleanup_interval_minutes` | `CLEANUP_INTERVAL_MINUTES` | int | `10` | Jeda waktu sistem merefresh/membersihkan memori browser |
+| `worker_mode` | `WORKER_MODE` | bool | `false` | Mode worker on-demand (browser baru nyala saat request & mati jika idle) |
+| `idle_timeout` | `IDLE_TIMEOUT` | int | `10` | Waktu tunggu idle (detik) sebelum browser dimatikan di worker_mode |
 
 Ketika pertama kali dijalankan di terminal interaktif, script akan membuat `config.json`. Anda bisa mengubahnya langsung:
 
@@ -123,7 +126,9 @@ Ketika pertama kali dijalankan di terminal interaktif, script akan membuat `conf
     "host":          "0.0.0.0",
     "port":          8000,
     "debug":         false,
-    "cleanup_interval_minutes": 10
+    "cleanup_interval_minutes": 10,
+    "worker_mode":   false,
+    "idle_timeout":  10
 }
 ```
 
