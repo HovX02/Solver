@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#09090b" />
+    <title>Solver Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+      tailwind.config = {
+        theme: {
+          extend: {
+            fontFamily: { sans: ['Inter', 'ui-sans-serif', 'system-ui', 'sans-serif'] },
+            colors: { ink: '#09090b', panel: '#111113', line: '#27272a', violet: '#8b5cf6' }
+          }
+        }
+      }
+    </script>
+    <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+    <style>
+      [v-cloak] { display: none; }
+      body { background: #09090b; }
+      .grid-bg { background-image: linear-gradient(rgba(255,255,255,.035) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,.035) 1px, transparent 1px); background-size: 48px 48px; }
+      .glow { box-shadow: 0 0 80px rgba(124, 58, 237, .12); }
+    </style>
+  </head>
+  <body class="min-h-screen font-sans text-zinc-100 antialiased">
+    <div id="app" v-cloak class="min-h-screen">
+      <section v-if="!authenticated" class="grid-bg flex min-h-screen items-center justify-center px-6 py-12">
+        <div class="w-full max-w-[420px]">
+          <div class="mb-10 flex items-center justify-center gap-3">
+            <span class="text-xl font-semibold tracking-tight">Solver<span class="text-violet-400">Dashboard</span></span>
+          </div>
+          <div class="glow rounded-2xl border border-zinc-800 bg-zinc-950/90 p-8 shadow-2xl">
+            <div class="mb-8"><p class="mb-2 text-sm font-medium text-violet-400">SOLVER CONSOLE</p><h1 class="text-2xl font-semibold tracking-tight">Welcome back</h1></div>
+            <form @submit.prevent="login" class="space-y-5">
+              <div><label for="username" class="mb-2 block text-sm font-medium text-zinc-300">Username</label><input id="username" v-model="credentials.username" autocomplete="username" required class="w-full rounded-lg border border-zinc-800 bg-zinc-900/70 px-3.5 py-3 text-sm outline-none transition placeholder:text-zinc-600 focus:border-violet-500 focus:ring-2 focus:ring-violet-500/20" placeholder="admin" /></div>
+              <div><label for="password" class="mb-2 block text-sm font-medium text-zinc-300">Password</label><input id="password" v-model="credentials.password" type="password" autocomplete="current-password" required class="w-full rounded-lg border border-zinc-800 bg-zinc-900/70 px-3.5 py-3 text-sm outline-none transition placeholder:text-zinc-600 focus:border-violet-500 focus:ring-2 focus:ring-violet-500/20" placeholder="••••••••" /></div>
+              <p v-if="error" role="alert" class="rounded-lg border border-red-500/20 bg-red-500/10 px-3 py-2 text-sm text-red-300">{{ error }}</p>
+              <button :disabled="loading" class="flex w-full items-center justify-center gap-2 rounded-lg bg-violet-500 px-4 py-3 text-sm font-semibold text-white transition hover:bg-violet-400 disabled:cursor-not-allowed disabled:opacity-60">{{ loading ? 'Signing in…' : 'Sign in to console' }}<span v-if="!loading">→</span></button>
+            </form>
+          </div>
+        </div>
+      </section>
+
+      <section v-else class="min-h-screen">
+        <header class="flex h-16 items-center justify-between border-b border-zinc-800/80 bg-zinc-950/80 px-5 backdrop-blur md:px-8">
+          <div class="flex items-center gap-3"><span class="font-semibold tracking-tight">Solver<span class="text-violet-400">Dashboard</span></span></div>
+          <div class="flex items-center gap-4"><button @click="logout" class="text-sm text-zinc-400 transition hover:text-white">Sign out</button></div>
+        </header>
+        <main class="mx-auto max-w-7xl px-5 py-8 md:px-8 md:py-12">
+          <div class="mb-8 flex flex-col justify-between gap-5 md:flex-row md:items-end"><div><p class="mb-2 text-sm font-medium text-violet-400">SOLVER CONSOLE</p><h1 class="text-3xl font-semibold tracking-tight">Infrastructure overview</h1></div><button @click="loadStatus" class="flex w-fit items-center gap-2 rounded-lg border border-zinc-800 bg-zinc-900 px-3.5 py-2.5 text-sm font-medium text-zinc-300 transition hover:border-zinc-700 hover:text-white">Refresh data</button></div>
+          <nav class="mb-8 flex gap-1 rounded-xl border border-zinc-800 bg-zinc-950 p-1" aria-label="Dashboard sections"><button @click="tab='workers'" :class="tab==='workers' ? 'bg-zinc-800 text-white shadow-sm' : 'text-zinc-500 hover:text-zinc-300'" class="rounded-lg px-4 py-2 text-sm font-medium transition">Workers</button><button @click="tab='proxies'" :class="tab==='proxies' ? 'bg-zinc-800 text-white shadow-sm' : 'text-zinc-500 hover:text-zinc-300'" class="rounded-lg px-4 py-2 text-sm font-medium transition">Proxy configuration</button></nav>
+          <div v-if="tab==='workers'">
+            <div class="mb-6 grid gap-4 sm:grid-cols-3"><div v-for="metric in metrics" :key="metric.label" class="rounded-xl border border-zinc-800 bg-zinc-950 p-5"><div class="mb-5 flex items-center justify-between"><span class="text-sm text-zinc-500">{{ metric.label }}</span></div><div class="text-3xl font-semibold tracking-tight">{{ metric.value }}</div></div></div>
+            <div class="rounded-xl border border-zinc-800 bg-zinc-950"><div class="flex items-center justify-between border-b border-zinc-800 px-5 py-4"><div><h2 class="font-medium">Worker pool</h2></div></div><div class="divide-y divide-zinc-800/70"><div v-for="worker in workers" :key="worker.id" class="flex flex-col gap-3 px-5 py-4 sm:flex-row sm:items-center sm:justify-between"><div class="flex items-center gap-3"><div><p class="text-sm font-medium">{{ worker.id }}</p></div></div><div class="flex gap-6 text-xs text-zinc-500"><span>Tasks <b class="ml-1 font-medium text-zinc-300">{{ worker.tasks }}</b></span><span>Browsers <b class="ml-1 font-medium text-zinc-300">{{ worker.browsers }}</b></span><span>Pages <b class="ml-1 font-medium text-zinc-300">{{ worker.pages }}</b></span></div></div></div></div>
+          </div>
+          <div v-else class="max-w-3xl"><div class="rounded-xl border border-zinc-800 bg-zinc-950 p-5 md:p-7"><div class="mb-7 flex items-start justify-between gap-4"><div><h2 class="font-medium">Proxy routing</h2></div><button type="button" @click="proxyEnabled=!proxyEnabled" :aria-pressed="proxyEnabled" class="relative h-6 w-11 rounded-full transition" :class="proxyEnabled ? 'bg-violet-500' : 'bg-zinc-700'"><span class="absolute top-1 h-4 w-4 rounded-full bg-white transition" :class="proxyEnabled ? 'left-6' : 'left-1'"></span></button></div><label for="proxies" class="mb-2 block text-sm font-medium text-zinc-300">Proxy endpoints</label><textarea id="proxies" v-model="proxies" rows="10" spellcheck="false" class="w-full resize-y rounded-lg border border-zinc-800 bg-zinc-900/60 px-3.5 py-3 font-mono text-sm leading-6 text-zinc-200 outline-none transition placeholder:text-zinc-600 focus:border-violet-500 focus:ring-2 focus:ring-violet-500/20" placeholder="http://user:password@host:port&#10;http://host:port"></textarea><div class="mt-7 flex items-center justify-between border-t border-zinc-800 pt-5"><span v-if="saveMessage" class="text-sm" :class="saveError ? 'text-red-400' : 'text-emerald-400'">{{ saveMessage }}</span><span v-else></span><button @click="saveProxies" :disabled="saving" class="rounded-lg bg-violet-500 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-violet-400 disabled:opacity-60">{{ saving ? 'Saving…' : 'Save configuration' }}</button></div></div></div>
+        </main>
+      </section>
+    </div>
+    <script>
+      const { createApp } = Vue;
+      createApp({
+        data() { return { authenticated: false, loading: false, loadingStatus: false, saving: false, error: '', saveMessage: '', saveError: false, tab: 'workers', credentials: { username: '', password: '' }, proxyEnabled: false, proxies: '', metrics: [{ label: 'Active tasks', value: '—', color: 'bg-violet-500/10 text-violet-400' }, { label: 'Browser instances', value: '—', color: 'bg-cyan-500/10 text-cyan-400' }, { label: 'Active pages', value: '—', color: 'bg-amber-500/10 text-amber-400' }], workers: [] }; },
+        mounted() {
+          if (localStorage.getItem('token')) {
+            this.authenticated = true;
+            this.loadStatus();
+            this.loadProxies();
+          }
+        },
+        methods: {
+            async login() { this.loading = true; this.error = ''; try { const response = await fetch('/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(this.credentials) }); if (!response.ok) throw new Error('Invalid username or password.'); const data = await response.json(); localStorage.setItem('token', data.token); this.authenticated = true; await Promise.all([this.loadStatus(), this.loadProxies()]); } catch (error) { this.error = error.message || 'Unable to sign in.'; } finally { this.loading = false; } },
+            async loadStatus() { this.loadingStatus = true; try { const response = await fetch('/api/status', {headers: {'Authorization': 'Bearer ' + localStorage.getItem('token')}}); if (!response.ok) { if (response.status === 401) this.logout(); throw new Error('Status unavailable'); } const data = await response.json(); const status = data.workers || data; this.metrics[0].value = status.activeTasks ?? data.activeTasks ?? 0; this.metrics[1].value = status.activeBrowsers ?? data.activeBrowsers ?? 0; this.metrics[2].value = status.activePages ?? data.activePages ?? 0; this.workers = data.workers || status.list || []; } catch (_) { this.metrics.forEach(metric => { if (metric.value === '—') metric.value = '0'; }); } finally { this.loadingStatus = false; } },
+            async loadProxies() { try { const response = await fetch('/api/proxies', {headers: {'Authorization': 'Bearer ' + localStorage.getItem('token')}}); if (!response.ok) return; const data = await response.json(); this.proxies = Array.isArray(data.proxies) ? data.proxies.join('\n') : (data.proxies || ''); this.proxyEnabled = data.enabled ?? Boolean(this.proxies); } catch (_) {} },
+            async saveProxies() { this.saving = true; this.saveMessage = ''; this.saveError = false; try { const response = await fetch('/api/proxies', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + localStorage.getItem('token') }, body: JSON.stringify({ enabled: this.proxyEnabled, proxies: this.proxies.split('\n').map(item => item.trim()).filter(Boolean) }) }); if (!response.ok) throw new Error('Could not save configuration.'); this.saveMessage = 'Configuration saved successfully.'; } catch (error) { this.saveError = true; this.saveMessage = error.message; } finally { this.saving = false; } },
+            logout() { localStorage.removeItem('token'); this.authenticated = false; this.credentials.password = ''; }
+        }
+      }).mount('#app');
+    </script>
+  </body>
+</html>

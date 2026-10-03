@@ -7,7 +7,19 @@ import asyncio
 import re
 from urllib.parse import urlparse
 from fastapi import FastAPI, Query, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse
+from pydantic import BaseModel
+from typing import List, Optional
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+class ProxyRequest(BaseModel):
+    enabled: bool
+    proxies: List[str]
+
+
 from loguru import logger
 from camoufox import DefaultAddons
 from camoufox.async_api import AsyncCamoufox
@@ -45,7 +57,8 @@ class ClearanceAPIServer:
     def __init__(self, headless: bool, thread: int, page_count: int,
                  proxy_support: bool, proxy_file: str = "proxies.txt",
                  cleanup_interval_minutes: int = 10,
-                 worker_mode: bool = False, idle_timeout: int = 10):
+                 worker_mode: bool = False, idle_timeout: int = 10,
+                 admin_username: str = "admin", admin_password: str = "admin"):
         self.app = FastAPI()
         self.headless = headless
         self.thread_count = thread
@@ -55,6 +68,9 @@ class ClearanceAPIServer:
         self.cleanup_interval_minutes = cleanup_interval_minutes
         self.worker_mode = worker_mode
         self.idle_timeout = idle_timeout
+        self.admin_username = admin_username
+        self.admin_password = admin_password
+        self._auth_tokens = set()
         self.page_pool = asyncio.Queue()
         self.browser_args = [
             "--no-sandbox",
@@ -82,6 +98,13 @@ class ClearanceAPIServer:
         self.app.get("/aws-token")(self.process_aws_token)
         self.app.get("/recaptchaV3")(self.process_recaptcha)
         self.app.post("/recaptchaV3")(self.process_recaptcha)
+
+        # UI & Dashboard Endpoints
+        self.app.get("/")(self.serve_ui)
+        self.app.post("/api/login")(self.api_login)
+        self.app.get("/api/status")(self.api_status)
+        self.app.get("/api/proxies")(self.api_get_proxies)
+        self.app.post("/api/proxies")(self.api_save_proxies)
 
     # ──────────────────────────────────────────────
     #  PROXY
@@ -1138,13 +1161,94 @@ class ClearanceAPIServer:
             status_code = 422
         return JSONResponse(content=result, status_code=status_code)
 
+    # ──────────────────────────────────────────────
+    #  DASHBOARD ENDPOINTS
+    # ──────────────────────────────────────────────
+
+    async def serve_ui(self):
+        return FileResponse("index.html")
+
+    def _verify_token(self, request: Request):
+        auth_header = request.headers.get("Authorization")
+        if not auth_header or not auth_header.startswith("Bearer "):
+            raise HTTPException(status_code=401, detail="Unauthorized")
+        token = auth_header.split(" ")[1]
+        if token not in self._auth_tokens:
+            raise HTTPException(status_code=401, detail="Unauthorized")
+        return token
+
+    async def api_login(self, req: LoginRequest):
+        if req.username == self.admin_username and req.password == self.admin_password:
+            token = str(uuid.uuid4())
+            self._auth_tokens.add(token)
+            return {"token": token}
+        raise HTTPException(status_code=401, detail="Invalid username or password")
+
+    async def api_status(self, request: Request):
+        self._verify_token(request)
+
+        workers_list = []
+        # In a real cluster we'd check actual workers, but here we run single server
+        # We can map browser contexts as pseudo-workers or just show global stats
+        active_browsers = len(self.contexts)
+
+        # Calculate active tasks count safely
+        active_tasks = sum(1 for v in self.results.values() if v.get("status") == "process")
+        active_pages = self._active_tasks
+
+        workers_list.append({
+            "id": "node-local",
+            "region": "local",
+            "tasks": active_tasks,
+            "browsers": active_browsers,
+            "pages": active_pages,
+            "status": "active" if self.browser else "inactive"
+        })
+
+        return {
+            "activeTasks": active_tasks,
+            "activeBrowsers": active_browsers,
+            "activePages": active_pages,
+            "workers": workers_list
+        }
+
+    async def api_get_proxies(self, request: Request):
+        self._verify_token(request)
+        # Read from file or memory
+        proxies_list = self.proxies.copy()
+        if not proxies_list and os.path.exists(self.proxy_file):
+             with open(self.proxy_file, "r") as f:
+                 proxies_list = [line.strip() for line in f if line.strip()]
+        return {
+            "enabled": self.proxy_support,
+            "proxies": proxies_list
+        }
+
+    async def api_save_proxies(self, request: Request, req: ProxyRequest):
+        self._verify_token(request)
+        self.proxy_support = req.enabled
+        self.proxies = []
+
+        with open(self.proxy_file, "w") as f:
+            for p in req.proxies:
+                clean_p = self.normalize_proxy(p.strip())
+                if clean_p:
+                    self.proxies.append(clean_p)
+                    f.write(clean_p + "\n")
+
+        return {"status": "success", "message": "Proxy configuration saved"}
+
+
+
 
 def create_app(headless, thread, page_count, proxy_support, proxy_file="proxies.txt",
-               cleanup_interval_minutes=10, worker_mode=False, idle_timeout=10) -> FastAPI:
+               cleanup_interval_minutes=10, worker_mode=False, idle_timeout=10,
+               admin_username="admin", admin_password="admin") -> FastAPI:
     server = ClearanceAPIServer(headless=headless, thread=thread, page_count=page_count,
                                 proxy_support=proxy_support, proxy_file=proxy_file,
                                 cleanup_interval_minutes=cleanup_interval_minutes,
-                                worker_mode=worker_mode, idle_timeout=idle_timeout)
+                                worker_mode=worker_mode, idle_timeout=idle_timeout,
+                                admin_username=admin_username, admin_password=admin_password)
     return server.app
 
 
@@ -1249,6 +1353,9 @@ CONFIG_DEFAULTS = {
     "proxy_file":    "proxies.txt",
     "host":          "0.0.0.0",
     "port":          8001,   # port berbeda dari api_server.py agar bisa jalan bersamaan
+    "admin_username": "admin",
+    "admin_password": "admin",
+
     "debug":         False,
     "cleanup_interval_minutes": 10,  # interval cleanup paksa (menit)
     "worker_mode":   False, # jika true, browser baru dinyalakan saat ada request & mati jika idle
@@ -1276,6 +1383,9 @@ def _load_config() -> dict:
         "PROXY_FILE": ("proxy_file", str),
         "HOST": ("host", str),
         "PORT": ("port", int),
+        "ADMIN_USERNAME": ("admin_username", str),
+        "ADMIN_PASSWORD": ("admin_password", str),
+
         "DEBUG": ("debug", bool),
         "CLEANUP_INTERVAL_MINUTES": ("cleanup_interval_minutes", int),
         "WORKER_MODE": ("worker_mode", bool),
@@ -1480,5 +1590,7 @@ if __name__ == "__main__":
         cleanup_interval_minutes=config.get("cleanup_interval_minutes", 10),
         worker_mode=config.get("worker_mode", False),
         idle_timeout=config.get("idle_timeout", 10),
+        admin_username=config.get("admin_username", "admin"),
+        admin_password=config.get("admin_password", "admin")
     )
     uvicorn.run(app, host=config["host"], port=config["port"])
