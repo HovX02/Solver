@@ -58,7 +58,7 @@ class ClearanceAPIServer:
                  proxy_support: bool, proxy_file: str = "proxies.txt",
                  cleanup_interval_minutes: int = 10,
                  worker_mode: bool = False, idle_timeout: int = 10,
-                 admin_username: str = "admin", admin_password: str = "admin"):
+                 admin_username: str = "admin", admin_password: str = "admin", api_key: str = ""):
         self.app = FastAPI()
         self.headless = headless
         self.thread_count = thread
@@ -70,6 +70,7 @@ class ClearanceAPIServer:
         self.idle_timeout = idle_timeout
         self.admin_username = admin_username
         self.admin_password = admin_password
+        self.api_key = api_key
         self._auth_tokens = set()
         self.page_pool = asyncio.Queue()
         self.browser_args = [
@@ -1034,8 +1035,25 @@ class ClearanceAPIServer:
     #  ENDPOINTS
     # ──────────────────────────────────────────────
 
-    async def process_turnstile(self, url: str = Query(...), sitekey: str = Query(...),
+
+    def _check_api_key(self, request: Request):
+        if not self.api_key:
+            return
+
+        key = request.headers.get("x-api-key")
+        if not key:
+            auth = request.headers.get("Authorization")
+            if auth and auth.lower().startswith("bearer "):
+                key = auth.split(" ", 1)[1]
+        if not key:
+            key = request.query_params.get("api_key")
+
+        if key != self.api_key:
+            raise HTTPException(status_code=401, detail={"status": "error", "error": "Invalid or missing API Key"})
+
+    async def process_turnstile(self, request: Request, url: str = Query(...), sitekey: str = Query(...),
                                  action: str = Query(None), cdata: str = Query(None)):
+        self._check_api_key(request)
         if not url or not sitekey:
             raise HTTPException(status_code=400, detail={"status": "error", "error": "Parameter 'url' dan 'sitekey' wajib diisi"})
 
@@ -1055,9 +1073,11 @@ class ClearanceAPIServer:
 
     async def process_clearance(
         self,
+        request: Request,
         url: str = Query(..., description="URL target yang dilindungi Cloudflare"),
         timeout: int = Query(30, description="Waktu tunggu maksimal dalam detik (default: 30)"),
     ):
+        self._check_api_key(request)
         """
         Endpoint untuk mendapatkan cf_clearance cookie.
 
@@ -1085,9 +1105,11 @@ class ClearanceAPIServer:
 
     async def process_aws_token(
         self,
+        request: Request,
         url: str = Query(..., description="URL target (e.g. https://vala-wallet.cc/waitlist)"),
         timeout: int = Query(30, description="Waktu tunggu maksimal dalam detik"),
     ):
+        self._check_api_key(request)
         """
         Endpoint untuk mendapatkan aws-waf-token cookie.
         Response sukses berisi: aws_waf_token, cookies, user_agent
@@ -1111,10 +1133,12 @@ class ClearanceAPIServer:
 
     async def process_recaptcha(
         self,
+        request: Request,
         url: str = Query(..., description="URL target / Domain yang menggunakan reCAPTCHA v3"),
         sitekey: str = Query(..., description="siteKey untuk Google reCAPTCHA v3"),
         action: str = Query("submit", description="Action name untuk reCAPTCHA v3 (default: submit)")
     ):
+        self._check_api_key(request)
         """
         Endpoint untuk memecahkan Google reCAPTCHA v3.
         Menerima parameter url, sitekey, dan action (opsional).
@@ -1131,7 +1155,8 @@ class ClearanceAPIServer:
             self.results.pop(task_id, None)
             return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
 
-    async def get_result(self, task_id: str = Query(..., alias="id")):
+    async def get_result(self, request: Request, task_id: str = Query(..., alias="id")):
+        self._check_api_key(request)
         if not task_id:
             return JSONResponse(content={"status": "error", "message": "Parameter id wajib diisi"}, status_code=400)
         if task_id not in self.results:
@@ -1243,12 +1268,12 @@ class ClearanceAPIServer:
 
 def create_app(headless, thread, page_count, proxy_support, proxy_file="proxies.txt",
                cleanup_interval_minutes=10, worker_mode=False, idle_timeout=10,
-               admin_username="admin", admin_password="admin") -> FastAPI:
+               admin_username="admin", admin_password="admin", api_key="") -> FastAPI:
     server = ClearanceAPIServer(headless=headless, thread=thread, page_count=page_count,
                                 proxy_support=proxy_support, proxy_file=proxy_file,
                                 cleanup_interval_minutes=cleanup_interval_minutes,
                                 worker_mode=worker_mode, idle_timeout=idle_timeout,
-                                admin_username=admin_username, admin_password=admin_password)
+                                admin_username=admin_username, admin_password=admin_password, api_key=api_key)
     return server.app
 
 
@@ -1355,6 +1380,7 @@ CONFIG_DEFAULTS = {
     "port":          8001,   # port berbeda dari api_server.py agar bisa jalan bersamaan
     "admin_username": "admin",
     "admin_password": "admin",
+    "api_key":        "",
 
     "debug":         False,
     "cleanup_interval_minutes": 10,  # interval cleanup paksa (menit)
@@ -1385,6 +1411,7 @@ def _load_config() -> dict:
         "PORT": ("port", int),
         "ADMIN_USERNAME": ("admin_username", str),
         "ADMIN_PASSWORD": ("admin_password", str),
+        "API_KEY": ("api_key", str),
 
         "DEBUG": ("debug", bool),
         "CLEANUP_INTERVAL_MINUTES": ("cleanup_interval_minutes", int),
@@ -1464,7 +1491,7 @@ def _interactive_config(cfg: dict) -> dict:
     if ans not in ("n", "no", "tidak"):
         return cfg
 
-    field_order = ["headless", "thread", "page_count", "proxy_support", "host", "port", "debug", "cleanup_interval_minutes", "worker_mode", "idle_timeout"]
+    field_order = ["headless", "thread", "page_count", "proxy_support", "host", "port", "debug", "cleanup_interval_minutes", "worker_mode", "idle_timeout", "api_key"]
     labels = {
         "headless":      "Mode Headless (true/false)",
         "thread":        "Jumlah thread",
@@ -1476,6 +1503,7 @@ def _interactive_config(cfg: dict) -> dict:
         "cleanup_interval_minutes": "Interval cleanup paksa (menit)",
         "worker_mode":   "Worker Mode (true/false)",
         "idle_timeout":  "Idle Timeout Browser (detik)",
+        "api_key":       "API Key (kosongkan jika tidak pakai)",
     }
     print("\n  ✏️   Tekan Enter untuk mempertahankan nilai saat ini")
     print("─" * 52)
@@ -1591,6 +1619,7 @@ if __name__ == "__main__":
         worker_mode=config.get("worker_mode", False),
         idle_timeout=config.get("idle_timeout", 10),
         admin_username=config.get("admin_username", "admin"),
-        admin_password=config.get("admin_password", "admin")
+        admin_password=config.get("admin_password", "admin"),
+        api_key=config.get("api_key", "")
     )
     uvicorn.run(app, host=config["host"], port=config["port"])
