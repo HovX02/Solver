@@ -113,6 +113,8 @@ All settings in `config.json` can be overridden via environment variables:
 | `cleanup_interval_minutes` | `CLEANUP_INTERVAL_MINUTES` | int | `10` | Interval for refreshing/cleaning up browser memory |
 | `worker_mode` | `WORKER_MODE` | bool | `false` | Run browser on-demand (start on request, close when idle) |
 | `idle_timeout` | `IDLE_TIMEOUT` | int | `10` | Idle timeout in seconds before closing browser in worker mode |
+| `require_api_key` | `REQUIRE_API_KEY` | bool | `false` | Enable API Key security requirement for tasks |
+| `api_keys` | `API_KEYS` | list | `["sk-test-key"]` | Comma separated list of valid API Keys |
 
 On first run in an interactive shell, the script will create a `config.json` file. You can edit it directly:
 
@@ -128,7 +130,9 @@ On first run in an interactive shell, the script will create a `config.json` fil
     "debug":         false,
     "cleanup_interval_minutes": 10,
     "worker_mode":   false,
-    "idle_timeout":  10
+    "idle_timeout":  10,
+    "require_api_key": false,
+    "api_keys": ["sk-test-key"]
 }
 ```
 

@@ -6,7 +6,7 @@ import uuid
 import asyncio
 import re
 from urllib.parse import urlparse
-from fastapi import FastAPI, Query, HTTPException, Request
+from fastapi import FastAPI, Query, HTTPException, Request, Depends, Header
 from fastapi.responses import JSONResponse, FileResponse
 from pydantic import BaseModel
 from typing import List, Optional
@@ -58,7 +58,8 @@ class ClearanceAPIServer:
                  proxy_support: bool, proxy_file: str = "proxies.txt",
                  cleanup_interval_minutes: int = 10,
                  worker_mode: bool = False, idle_timeout: int = 10,
-                 admin_username: str = "admin", admin_password: str = "admin"):
+                 admin_username: str = "admin", admin_password: str = "admin",
+                 require_api_key: bool = False, api_keys: list = None):
         self.app = FastAPI()
         self.headless = headless
         self.thread_count = thread
@@ -71,6 +72,8 @@ class ClearanceAPIServer:
         self.admin_username = admin_username
         self.admin_password = admin_password
         self._auth_tokens = set()
+        self.require_api_key = require_api_key
+        self.api_keys = api_keys or []
         self.page_pool = asyncio.Queue()
         self.browser_args = [
             "--no-sandbox",
@@ -92,12 +95,12 @@ class ClearanceAPIServer:
 
         self.app.add_event_handler("startup", self._startup)
         self.app.add_event_handler("shutdown", self._shutdown)
-        self.app.get("/turnstile")(self.process_turnstile)
-        self.app.get("/clearance")(self.process_clearance)
-        self.app.get("/result")(self.get_result)
-        self.app.get("/aws-token")(self.process_aws_token)
-        self.app.get("/recaptchaV3")(self.process_recaptcha)
-        self.app.post("/recaptchaV3")(self.process_recaptcha)
+        self.app.get("/turnstile", dependencies=[Depends(self.verify_api_key)])(self.process_turnstile)
+        self.app.get("/clearance", dependencies=[Depends(self.verify_api_key)])(self.process_clearance)
+        self.app.get("/result", dependencies=[Depends(self.verify_api_key)])(self.get_result)
+        self.app.get("/aws-token", dependencies=[Depends(self.verify_api_key)])(self.process_aws_token)
+        self.app.get("/recaptchaV3", dependencies=[Depends(self.verify_api_key)])(self.process_recaptcha)
+        self.app.post("/recaptchaV3", dependencies=[Depends(self.verify_api_key)])(self.process_recaptcha)
 
         # UI & Dashboard Endpoints
         self.app.get("/")(self.serve_ui)
@@ -1168,6 +1171,13 @@ class ClearanceAPIServer:
     async def serve_ui(self):
         return FileResponse("index.html")
 
+    async def verify_api_key(self, api_key: str = Query(None, alias="api-key"), x_api_key: str = Header(None, alias="x-api-key")):
+        if self.require_api_key:
+            key = api_key or x_api_key
+            if not key or key not in self.api_keys:
+                raise HTTPException(status_code=401, detail="Invalid API Key")
+        return True
+
     def _verify_token(self, request: Request):
         auth_header = request.headers.get("Authorization")
         if not auth_header or not auth_header.startswith("Bearer "):
@@ -1243,12 +1253,14 @@ class ClearanceAPIServer:
 
 def create_app(headless, thread, page_count, proxy_support, proxy_file="proxies.txt",
                cleanup_interval_minutes=10, worker_mode=False, idle_timeout=10,
-               admin_username="admin", admin_password="admin") -> FastAPI:
+               admin_username="admin", admin_password="admin",
+               require_api_key=False, api_keys=None) -> FastAPI:
     server = ClearanceAPIServer(headless=headless, thread=thread, page_count=page_count,
                                 proxy_support=proxy_support, proxy_file=proxy_file,
                                 cleanup_interval_minutes=cleanup_interval_minutes,
                                 worker_mode=worker_mode, idle_timeout=idle_timeout,
-                                admin_username=admin_username, admin_password=admin_password)
+                                admin_username=admin_username, admin_password=admin_password,
+                                require_api_key=require_api_key, api_keys=api_keys)
     return server.app
 
 
@@ -1355,6 +1367,8 @@ CONFIG_DEFAULTS = {
     "port":          8001,   # port berbeda dari api_server.py agar bisa jalan bersamaan
     "admin_username": "admin",
     "admin_password": "admin",
+    "require_api_key": False,
+    "api_keys": ["sk-test-key"],
 
     "debug":         False,
     "cleanup_interval_minutes": 10,  # interval cleanup paksa (menit)
@@ -1385,12 +1399,16 @@ def _load_config() -> dict:
         "PORT": ("port", int),
         "ADMIN_USERNAME": ("admin_username", str),
         "ADMIN_PASSWORD": ("admin_password", str),
+        "REQUIRE_API_KEY": ("require_api_key", bool),
 
         "DEBUG": ("debug", bool),
         "CLEANUP_INTERVAL_MINUTES": ("cleanup_interval_minutes", int),
         "WORKER_MODE": ("worker_mode", bool),
         "IDLE_TIMEOUT": ("idle_timeout", int),
     }
+
+    if "API_KEYS" in os.environ:
+        cfg["api_keys"] = [k.strip() for k in os.environ["API_KEYS"].split(",") if k.strip()]
 
     for env_key, (cfg_key, val_type) in env_mappings.items():
         if env_key in os.environ:
@@ -1591,6 +1609,8 @@ if __name__ == "__main__":
         worker_mode=config.get("worker_mode", False),
         idle_timeout=config.get("idle_timeout", 10),
         admin_username=config.get("admin_username", "admin"),
-        admin_password=config.get("admin_password", "admin")
+        admin_password=config.get("admin_password", "admin"),
+        require_api_key=config.get("require_api_key", False),
+        api_keys=config.get("api_keys", [])
     )
     uvicorn.run(app, host=config["host"], port=config["port"])
