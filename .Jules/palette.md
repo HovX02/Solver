@@ -1,0 +1,3 @@
+## 2026-10-09 - [Custom Toggle Switches ARIA Roles]
+**Learning:** In the solver dashboard app, custom toggle switches written using Vue and Tailwind classes lacked keyboard accessibility and accessible names. While `:aria-pressed` was being used correctly to indicate state, the element itself lacked `aria-label` to give it a name, and lacked `focus-visible` to give visual feedback when navigated to via keyboard.
+**Action:** When implementing or updating custom toggle buttons or icon-only buttons, ensure an `aria-label` is present and add `outline-none focus-visible:ring-2 focus-visible:ring-violet-500` (or appropriate primary color classes) to ensure it is fully keyboard accessible.
