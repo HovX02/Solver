@@ -3,6 +3,7 @@ import os
 import sys
 import time
 import uuid
+import secrets
 import asyncio
 import re
 from urllib.parse import urlparse
@@ -1203,8 +1204,8 @@ class ClearanceAPIServer:
         return token
 
     async def api_login(self, req: LoginRequest):
-        if req.username == self.admin_username and req.password == self.admin_password:
-            token = str(uuid.uuid4())
+        if secrets.compare_digest(req.username, self.admin_username) and secrets.compare_digest(req.password, self.admin_password):
+            token = secrets.token_urlsafe(32)
             self._auth_tokens.add(token)
             return {"token": token}
         raise HTTPException(status_code=401, detail="Invalid username or password")
